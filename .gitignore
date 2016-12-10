@@ -91,6 +91,7 @@ ENV/
 # images
 *.tif
 *.tiff
+*.png
 
 # csv
 *.csv
