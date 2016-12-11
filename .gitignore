@@ -98,3 +98,6 @@ ENV/
 
 # compressed files
 *.zip
+
+# information
+docs/
