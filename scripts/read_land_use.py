@@ -4,9 +4,10 @@ import numpy as np
 
 def read_land_use(da_shapefile="SDM324649_full/ll_gda94/sde_shape/whole/VIC/CATCHMENTS/layer/landuse_2014.shp",
                   resolution=(1022, 973),
-                  area_filter="POLYGON ((142.79501249253747 -37.62573016158374, 142.79363481285884 -37.832739875957245,\
-                        143.06774894788782 -37.83260406398416, 143.0691229156846 -37.62518532754736,\
-                        142.79501249253747 -37.62573016158374))"):
+                  area_filter="POLYGON ((143.32317350376297 -37.496296386368165, 143.32180000642074 -37.70330610816869,\
+                        143.59543478539388 -37.70317028876007, 143.5968081449812 -37.49575155973978,\
+                        143.32317350376297 -37.496296386368165))",
+                  buffer=0):
     driver = ogr.GetDriverByName('ESRI Shapefile')
     data_source = driver.Open(da_shapefile, 0)
     if data_source is None:
@@ -20,6 +21,7 @@ def read_land_use(da_shapefile="SDM324649_full/ll_gda94/sde_shape/whole/VIC/CATC
 
     filter_poly = ogr.CreateGeometryFromWkt(area_filter)
     layer.SetSpatialFilter(filter_poly)
+
     selected_feature_count = layer.GetFeatureCount()
     print("Number of features in selected area: %d" % selected_feature_count)
 
