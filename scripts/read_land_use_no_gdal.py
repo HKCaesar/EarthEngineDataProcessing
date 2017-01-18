@@ -1,9 +1,9 @@
-import numpy as np
+﻿import numpy as np
 import fiona
 from shapely.geometry import Polygon
 from shapely.wkt import dumps, loads
 from shapely.geometry import asShape, mapping
-from rasterio import features
+from rasterio import features, transform
 
 
 def read_land_use(da_shapefile="SDM324649_full/ll_gda94/sde_shape/whole/VIC/CATCHMENTS/layer/landuse_2014.shp",
@@ -36,5 +36,6 @@ def read_land_use(da_shapefile="SDM324649_full/ll_gda94/sde_shape/whole/VIC/CATC
     image = features.rasterize(
         ((g, v) for g, v in shapes),
         out_shape=(973, 1022),
-        transform=[x_min, pixel_size, 0, y_max, 0, -pixel_size])
+        transform=transform.from_bounds(x_min, y_min, x_max, y_max, x_res, y_res))
+        #transform=[x_min, pixel_size, 0, y_max, 0, -pixel_size])
     return image, unique_classes_dict

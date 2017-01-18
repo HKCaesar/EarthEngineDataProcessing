@@ -1,4 +1,4 @@
-﻿import numpy as np
+import numpy as np
 import gdal
 import os
 import pandas as pd
@@ -108,21 +108,18 @@ def generate_interpolated_training_set(ds, ds_new, label_img_dir='labels/labels.
     fitted_images = interpolate_images(times_to_fit, ds)
     train = make_set(fitted_images)
 
-    new_no_cloud = interpolate_images(dataset=ds_new, timestamps=list(ds_new.keys()))
-    to_predict = make_set(new_no_cloud)
+    to_predict = make_set(ds_new)
     to_predict.columns = [c for c in to_predict.columns]
     to_predict = to_predict.rename(columns={('major', ''): 'x', ('minor', ''): 'y'})
 
     if labels is None:
         label_image = Image.open(label_img_dir)
         labels = np.array(label_image)
-        pix_array = labels.reshape(labels.shape[0] * labels.shape[1], labels.shape[2])
-        label_colours = np.vstack({tuple(row) for row in pix_array})
-        label_map = {tuple(row): i for row, i in zip(label_colours, range(label_colours.shape[0]))}
-        label_converted = np.apply_along_axis(lambda x: label_map[tuple(x)], 2, labels)
-    else:
-        label_converted = labels
 
+    pix_array = labels.reshape(labels.shape[0] * labels.shape[1], labels.shape[2])
+    label_colours = np.vstack({tuple(row) for row in pix_array})
+    label_map = {tuple(row): i for row, i in zip(label_colours, range(label_colours.shape[0]))}
+    label_converted = np.apply_along_axis(lambda x: label_map[tuple(x)], 2, labels)
     df = pd.DataFrame(label_converted)
     df['x'] = df.index
     label_set = pd.melt(df, id_vars='x')
