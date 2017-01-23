@@ -32,10 +32,10 @@ def read_land_use(da_shapefile="SDM324649_full/ll_gda94/sde_shape/whole/VIC/CATC
     shapes = ((feature['geometry'], unique_classes_inv[feature['properties']['LC_DESC_14']]) for feature in filtered)
     x_min, y_min, x_max, y_max = filter_poly.bounds
     x_res, y_res = resolution
-    pixel_size = (x_max - x_min) / x_res
+    # pixel_size = (x_max - x_min) / x_res
     image = features.rasterize(
         ((g, v) for g, v in shapes),
-        out_shape=(973, 1022),
+        out_shape=(y_res, x_res),
         transform=transform.from_bounds(x_min, y_min, x_max, y_max, x_res, y_res))
         #transform=[x_min, pixel_size, 0, y_max, 0, -pixel_size])
     return image, unique_classes_dict

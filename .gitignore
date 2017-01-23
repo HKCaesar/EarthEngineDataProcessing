@@ -105,3 +105,6 @@ docs/
 # dataset
 SDM320384/
 SDM324649_full/
+
+# temp model data
+models/

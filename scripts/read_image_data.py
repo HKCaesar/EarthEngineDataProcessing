@@ -29,7 +29,7 @@ def read_image_data(image_dir='2014/images/',
 def get_boolean_mask(image, level=1):
     cfmask = image[3, :, :]
     cfmask_conf = image[4, :, :]
-    return (cfmask == 0) & (cfmask_conf <= level)
+    return ((cfmask == 0) | (cfmask == 1)) & (cfmask_conf <= level)
 
 
 def zigzag_integer_pairs(max_x, max_y):
@@ -45,13 +45,13 @@ def zigzag_integer_pairs(max_x, max_y):
             x = 0
 
 
-def interpolate(timestamp, dataset):
+def interpolate(timestamp, dataset, max_days_apart=None):
     times = list(dataset.keys())
     times.sort()
     pos = bisect.bisect(times, timestamp)
     # n_times = len(times)
     dims = dataset[times[0]].shape
-    interpolated = np.zeros((3, dims[1], dims[2]))
+    interpolated = np.ones((3, dims[1], dims[2])) * (-999)
     times_before = times[:pos]
     times_before.reverse()
     times_after = times[pos:]
@@ -59,27 +59,31 @@ def interpolate(timestamp, dataset):
     for pair in zigzag_integer_pairs(len(times_before) - 1, len(times_after) - 1):
         before = times_before[pair[0]]
         after = times_after[pair[1]]
-        alpha = 1.0 * (timestamp - before) / (after - before)
-        mask_before = get_boolean_mask(dataset[before])
-        mask_after = get_boolean_mask(dataset[after])
-        common_unmasked = mask_before & mask_after
-        valid = common_unmasked & unfilled
-#         fitted = dataset[before][:3, :, :] * alpha + dataset[after][:3, :, :] * (1 - alpha)
-        fitted = np.zeros((3, dims[1], dims[2]))
-        fitted[:, valid] = dataset[before][:3, valid] * alpha + dataset[after][:3, valid] * (1 - alpha)
-        unfilled = unfilled ^ valid
-        interpolated[:, valid] = fitted[:, valid]
+        delta = datetime.datetime.fromtimestamp(after/1000) - datetime.datetime.fromtimestamp(before/1000)
+        if max_days_apart is None or delta.days < max_days_apart:
+            alpha = 1.0 * (timestamp - before) / (after - before)
+            mask_before = get_boolean_mask(dataset[before])
+            mask_after = get_boolean_mask(dataset[after])
+            common_unmasked = mask_before & mask_after
+            valid = common_unmasked & unfilled
+            #         fitted = dataset[before][:3, :, :] * alpha + dataset[after][:3, :, :] * (1 - alpha)
+            fitted = np.zeros((3, dims[1], dims[2]))
+            fitted[:, valid] = dataset[before][:3, valid] * alpha + dataset[after][:3, valid] * (1 - alpha)
+            unfilled = unfilled ^ valid
+            interpolated[:, valid] = fitted[:, valid]
     times.sort(key=lambda t: abs(t - timestamp))
     for ts in times:
-        mask = get_boolean_mask(dataset[ts])
-        valid = mask & unfilled
-        unfilled = unfilled ^ valid
-        interpolated[:, valid] = dataset[ts][:3, valid]
+        delta = datetime.datetime.fromtimestamp(ts / 1000) - datetime.datetime.fromtimestamp(timestamp / 1000)
+        if max_days_apart is None or abs(delta.days) < max_days_apart:
+            mask = get_boolean_mask(dataset[ts])
+            valid = mask & unfilled
+            unfilled = unfilled ^ valid
+            interpolated[:, valid] = dataset[ts][:3, valid]
     return interpolated
 
 
-def interpolate_images(timestamps, dataset):
-    return {ts: interpolate(ts, dataset) for ts in timestamps}
+def interpolate_images(timestamps, dataset, max_days_apart=None):
+    return {ts: interpolate(ts, dataset, max_days_apart) for ts in timestamps}
 
 
 def convert_to_dataframe(image):
@@ -95,8 +99,8 @@ def make_set(images):
     return res.reset_index()
 
 
-def generate_interpolated_training_set(ds, ds_new, label_img_dir='labels/labels.png',
-                                       labels=None):
+def generate_interpolated_training_set(ds, ds_new=None, label_img_dir='labels/labels.png',
+                                       labels=None, max_days_apart=None):
     times = list(ds_new.keys())
     times.sort()
     times_to_fit = []
@@ -105,13 +109,17 @@ def generate_interpolated_training_set(ds, ds_new, label_img_dir='labels/labels.
         dt = dt.replace(year=dt.year - 1)
         times_to_fit += [int(dt.timestamp() * 1000)]
 
-    fitted_images = interpolate_images(times_to_fit, ds)
+    fitted_images = interpolate_images(times_to_fit, ds, max_days_apart)
     train = make_set(fitted_images)
 
-    new_no_cloud = interpolate_images(dataset=ds_new, timestamps=list(ds_new.keys()))
-    to_predict = make_set(new_no_cloud)
-    to_predict.columns = [c for c in to_predict.columns]
-    to_predict = to_predict.rename(columns={('major', ''): 'x', ('minor', ''): 'y'})
+    if ds_new is not None:
+        new_no_cloud = interpolate_images(dataset=ds_new, timestamps=list(ds_new.keys()),
+                                          max_days_apart=max_days_apart)
+        to_predict = make_set(new_no_cloud)
+        to_predict.columns = [c for c in to_predict.columns]
+        to_predict = to_predict.rename(columns={('major', ''): 'x', ('minor', ''): 'y'})
+    else:
+        to_predict = None
 
     if labels is None:
         label_image = Image.open(label_img_dir)
@@ -130,3 +138,32 @@ def generate_interpolated_training_set(ds, ds_new, label_img_dir='labels/labels.
     train_labelled = train_labelled.drop(['x', 'variable'], axis=1).rename(
         columns={('major', ''): 'x', ('minor', ''): 'y', 'value': 'label'})
     return train_labelled, to_predict
+
+
+def generate_interpolated_set_from_timestamps(ds, times, labels=None, on_self=False, max_days_apart=None):
+    times.sort()
+    times_to_fit = []
+    # TODO: separate timestamp lagging and fitting
+    if not on_self:
+        for t in times:
+            dt = datetime.datetime.fromtimestamp(t / 1000)
+            dt = dt.replace(year=dt.year - 1)
+            times_to_fit += [int(dt.timestamp() * 1000)]
+    else:
+        times_to_fit = times
+
+    fitted_images = interpolate_images(times_to_fit, ds, max_days_apart)
+    train = make_set(fitted_images)
+
+    if labels is not None:
+        df = pd.DataFrame(labels)
+        df['x'] = df.index
+        label_set = pd.melt(df, id_vars='x')
+        train_labelled = pd.merge(train, label_set, left_on=['major', 'minor'], right_on=['x', 'variable'], copy=False)
+        train_labelled = train_labelled.drop(['x', 'variable'], axis=1).rename(
+            columns={('major', ''): 'x', ('minor', ''): 'y', 'value': 'label'})
+        return train_labelled
+    else:
+        train.columns = [c for c in train.columns]
+        train = train.rename(columns={('major', ''): 'x', ('minor', ''): 'y'})
+        return train
