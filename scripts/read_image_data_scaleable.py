@@ -1,30 +1,49 @@
-﻿import numpy as np
-import gdal
-import os
+import rasterio
+import numpy as np
 import pandas as pd
+import os
+import shelve
 import datetime
 import bisect
 from PIL import Image
-# from multiprocessing import Pool
+from multiprocessing import Pool
 
 
 def read_image_data(image_dir='2014/images/',
                     mask_dir='2014/masks/',
-                    table_dir='2014/tables/LC8_SR.csv'):
-    combined = {}
+                    table_dir='2014/tables/LC8_SR.csv', 
+                    shelve_dir=None):
+    if shelve_dir is None:
+        combined = {} # write to file instead
+        ds = {}
+    else:
+        try:
+            os.remove(shelve_dir + 'ds.dat')
+            os.remove(shelve_dir + 'ds.dir')
+            os.remove(shelve_dir + 'ds.bak')
+        except FileNotFoundError:
+            pass
+        combined = shelve.open(shelve_dir + 'combined')
+        ds = shelve.open(shelve_dir + 'ds')
     for fn in os.listdir(image_dir):
-        raw_img = gdal.Open(image_dir + fn)
-        arr_img = raw_img.ReadAsArray()
-        raw_msk = gdal.Open(mask_dir + fn)
-        arr_msk = raw_msk.ReadAsArray()
+        arr_img = rasterio.open(image_dir + fn).read()
+        arr_msk = rasterio.open(mask_dir + fn).read()
         combined[fn.split('.')[0]] = np.concatenate((arr_img, arr_msk), axis=0)
     table = pd.read_csv(table_dir)
     time_start = table[['system:index', 'system:time_start']]
-    ds = {}
+    
     for k, v in combined.items():
         ts = time_start[time_start['system:index'] == k]['system:time_start'].iloc[0]
-        ds[ts] = v
-    return ds
+        ds[str(ts)] = v
+    if shelve_dir is not None:
+        combined.close()
+        try:
+            os.remove(shelve_dir + 'combined.dat')
+            os.remove(shelve_dir + 'combined.dir')
+            os.remove(shelve_dir + 'combined.bak')
+        except FileNotFoundError:
+            pass
+    return ds  # need to close ds later in code!
 
 
 def get_boolean_mask(image, level=1):
@@ -44,14 +63,16 @@ def zigzag_integer_pairs(max_x, max_y):
         else:
             total += 1
             x = 0
-
+            
 
 def interpolate(timestamp, dataset, max_days_apart=None):
-    times = list(dataset.keys())
+    # assuming dict keys are strings
+    keys = list(dataset.keys())
+    times = [int(k) for k in keys]
     times.sort()
     pos = bisect.bisect(times, timestamp)
     # n_times = len(times)
-    dims = dataset[times[0]].shape
+    dims = dataset[str(times[0])].shape
     interpolated = np.ones((3, dims[1], dims[2])) * (-999)
     times_before = times[:pos]
     times_before.reverse()
@@ -63,28 +84,41 @@ def interpolate(timestamp, dataset, max_days_apart=None):
         delta = datetime.datetime.fromtimestamp(after/1000) - datetime.datetime.fromtimestamp(before/1000)
         if max_days_apart is None or delta.days < max_days_apart:
             alpha = 1.0 * (timestamp - before) / (after - before)
-            mask_before = get_boolean_mask(dataset[before])
-            mask_after = get_boolean_mask(dataset[after])
+            mask_before = get_boolean_mask(dataset[str(before)])
+            mask_after = get_boolean_mask(dataset[str(after)])
             common_unmasked = mask_before & mask_after
             valid = common_unmasked & unfilled
             #         fitted = dataset[before][:3, :, :] * alpha + dataset[after][:3, :, :] * (1 - alpha)
             fitted = np.zeros((3, dims[1], dims[2]))
-            fitted[:, valid] = dataset[before][:3, valid] * alpha + dataset[after][:3, valid] * (1 - alpha)
+            fitted[:, valid] = dataset[str(before)][:3, valid] * alpha + dataset[str(after)][:3, valid] * (1 - alpha)
             unfilled = unfilled ^ valid
             interpolated[:, valid] = fitted[:, valid]
     times.sort(key=lambda t: abs(t - timestamp))
     for ts in times:
         delta = datetime.datetime.fromtimestamp(ts / 1000) - datetime.datetime.fromtimestamp(timestamp / 1000)
         if max_days_apart is None or abs(delta.days) < max_days_apart:
-            mask = get_boolean_mask(dataset[ts])
+            mask = get_boolean_mask(dataset[str(ts)])
             valid = mask & unfilled
             unfilled = unfilled ^ valid
-            interpolated[:, valid] = dataset[ts][:3, valid]
+            interpolated[:, valid] = dataset[str(ts)][:3, valid]
     return interpolated
 
 
+class Interpolator(object):
+    def __init__(self, dataset, max_days_apart=None):
+        self.dataset = dataset
+        self.max_days_apart = max_days_apart
+    def __call__(self, ts):
+        return ts, interpolate(ts, self.dataset, self.max_days_apart)
+
+
 def interpolate_images(timestamps, dataset, max_days_apart=None, processes=1):
-    return {ts: interpolate(ts, dataset, max_days_apart) for ts in timestamps}
+    if processes == 1:
+        return {ts: interpolate(ts, dataset, max_days_apart) for ts in timestamps}
+    else:
+        p = Pool(processes)
+        res = p.map(Interpolator(dataset, max_days_apart), timestamps)
+        return {k: v for k, v in res}
 
 
 def convert_to_dataframe(image):
@@ -102,7 +136,9 @@ def make_set(images):
 
 def generate_interpolated_training_set(ds, ds_new=None, label_img_dir='labels/labels.png',
                                        labels=None, max_days_apart=None):
-    times = list(ds_new.keys())
+    # assuming dict keys are strings
+    keys = list(ds_new.keys())
+    times = [int(k) for k in keys]
     times.sort()
     times_to_fit = []
     for t in times:
@@ -142,6 +178,7 @@ def generate_interpolated_training_set(ds, ds_new=None, label_img_dir='labels/la
 
 
 def generate_interpolated_set_from_timestamps(ds, times, labels=None, on_self=False, max_days_apart=None):
+    # times need to be int already
     times.sort()
     times_to_fit = []
     # TODO: separate timestamp lagging and fitting
