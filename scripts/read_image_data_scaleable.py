@@ -9,50 +9,83 @@ from PIL import Image
 from multiprocessing import Pool
 
 
+# define multiprocessing method for reading / combining raw images and masks
+class ImageReader:
+    def __init__(self, time_start, image_dir, mask_dir):
+        self.time_start = time_start
+        self.mask_dir = mask_dir
+        self.image_dir = image_dir
+
+    def __call__(self, fn):
+        arr_img = rasterio.open(self.image_dir + fn).read()
+        arr_msk = rasterio.open(self.mask_dir + fn).read()
+        ts = self.time_start[self.time_start['system:index'] == fn.split('.')[0]]['system:time_start'].iloc[0]
+        return str(ts), np.concatenate((arr_img, arr_msk), axis=0)
+
+
 def read_image_data(image_dir='2014/images/',
                     mask_dir='2014/masks/',
                     table_dir='2014/tables/LC8_SR.csv', 
-                    shelve_dir=None):
+                    shelve_dir=None,
+                    processes=1):
+    """
+    reads data from raw images and store combined band and mask data in a shelve indexed by the image timestamp
+    :param image_dir: directory of the images (GeoTiff) containing band info
+    :param mask_dir: directory of the masks GeoTiff
+    :param table_dir: path to the table with image metadata
+    :param shelve_dir: directory for storing the shelf file containing processed data
+    :param processes: number of processes to use
+    :return: a Shelf View of the processed data, or a dict if shelve_dir is not specified
+    """
     if shelve_dir is None:
-        combined = {} # write to file instead
-        ds = {}
+        combined = {}  # write to file instead
     else:
-        try:
-            os.remove(shelve_dir + 'ds.dat')
-            os.remove(shelve_dir + 'ds.dir')
-            os.remove(shelve_dir + 'ds.bak')
-        except FileNotFoundError:
-            pass
-        combined = shelve.open(shelve_dir + 'combined')
-        ds = shelve.open(shelve_dir + 'ds')
-    for fn in os.listdir(image_dir):
-        arr_img = rasterio.open(image_dir + fn).read()
-        arr_msk = rasterio.open(mask_dir + fn).read()
-        combined[fn.split('.')[0]] = np.concatenate((arr_img, arr_msk), axis=0)
-    table = pd.read_csv(table_dir)
-    time_start = table[['system:index', 'system:time_start']]
-    
-    for k, v in combined.items():
-        ts = time_start[time_start['system:index'] == k]['system:time_start'].iloc[0]
-        ds[str(ts)] = v
-    if shelve_dir is not None:
-        combined.close()
         try:
             os.remove(shelve_dir + 'combined.dat')
             os.remove(shelve_dir + 'combined.dir')
             os.remove(shelve_dir + 'combined.bak')
         except FileNotFoundError:
             pass
-    return ds  # need to close ds later in code!
+        combined = shelve.open(shelve_dir + 'combined')
+        # ds = shelve.open(shelve_dir + 'ds')
+
+    table = pd.read_csv(table_dir)
+    time_start = table[['system:index', 'system:time_start']]
+
+    p = Pool(processes)
+    for ts, img in p.imap(ImageReader(time_start, image_dir, mask_dir), os.listdir(image_dir)):
+        combined[ts] = img
+    p.close()
+
+    # for fn in os.listdir(image_dir):
+    #     arr_img = rasterio.open(image_dir + fn).read()
+    #     arr_msk = rasterio.open(mask_dir + fn).read()
+    #     ts = time_start[time_start['system:index'] == fn.split('.')[0]]['system:time_start'].iloc[0]
+    #     combined[str(ts)] = np.concatenate((arr_img, arr_msk), axis=0)
+
+    return combined
 
 
 def get_boolean_mask(image, level=1):
+    """
+    Generate a 1/0 cloud mask for a given image
+    :param image: input image
+    :param level: minimal confidence level
+    :return: a mask matrix
+    """
     cfmask = image[3, :, :]
     cfmask_conf = image[4, :, :]
     return ((cfmask == 0) | (cfmask == 1)) & (cfmask_conf <= level)
 
 
 def zigzag_integer_pairs(max_x, max_y):
+    """
+    Generator
+    Generate pairs of integers like (0,0), (0,1), (1,0), (0,2), (1,1), (2,0), ...
+    Used for selecting images used for interpolation operations
+    :param max_x: maximum number for the first element
+    :param max_y: maximum number for the second element
+    """
     total = 0
     x = 0
     while total <= max_x + max_y:
@@ -67,6 +100,14 @@ def zigzag_integer_pairs(max_x, max_y):
 
 def interpolate(timestamp, dataset, max_days_apart=None):
     # assuming dict keys are strings
+    """
+    Calculate the interpolated image at a given timestamp
+    :param timestamp: timestamp for interpolation (as int)
+    :param dataset: a dict or shelf view for image data, assuming timestamps are strings
+    :param max_days_apart: maximum days allowed between two interpolated value and a known value to be used as input
+    in interpolation before the algorithm reports a missing value
+    :return: the interpolated image array
+    """
     keys = list(dataset.keys())
     times = [int(k) for k in keys]
     times.sort()
@@ -104,36 +145,141 @@ def interpolate(timestamp, dataset, max_days_apart=None):
     return interpolated
 
 
-class Interpolator(object):
+class Interpolater(object):
+
     def __init__(self, dataset, max_days_apart=None):
         self.dataset = dataset
         self.max_days_apart = max_days_apart
+
     def __call__(self, ts):
-        return ts, interpolate(ts, self.dataset, self.max_days_apart)
+        return str(ts), interpolate(ts, self.dataset, self.max_days_apart)
 
 
-def interpolate_images(timestamps, dataset, max_days_apart=None, processes=1):
+def interpolate_images(timestamps, dataset, max_days_apart=None, processes=1, shelve_dir=None):
     if processes == 1:
         return {ts: interpolate(ts, dataset, max_days_apart) for ts in timestamps}
     else:
+        try:
+            os.remove(shelve_dir + 'interpolated.dat')
+            os.remove(shelve_dir + 'interpolated.dir')
+            os.remove(shelve_dir + 'interpolated.bak')
+        except FileNotFoundError:
+            pass
+        imgs = shelve.open(shelve_dir + 'interpolated')
         p = Pool(processes)
-        res = p.map(Interpolator(dataset, max_days_apart), timestamps)
-        return {k: v for k, v in res}
+        for ts, img in p.imap(Interpolater(dataset, max_days_apart), timestamps):
+            imgs[ts] = img
+        p.close()
+        return imgs
 
 
-def convert_to_dataframe(image):
-    frame = pd.Panel(image).to_frame()
-    return frame
+def convert_to_dataframe(key_image):
+    frame = pd.Panel(key_image[1]).to_frame()
+    return key_image[0], frame
 
 
 def make_set(images):
-    times = list(images.keys())
-    times.sort()
-    res = pd.concat([convert_to_dataframe(i) for i in images.values()], axis=1, keys=images.keys())
+    # times = list(images.keys())
+    # times.sort()
+    res = pd.concat([convert_to_dataframe(i)[1] for i in images.items()], axis=1, keys=images.keys())
 #     res = pd.concat(list(map(convert_to_dataframe, images.values())), axis=0)
     return res.reset_index()
 
 
+def store_set(images, processes=1, shelve_dir=None):
+    try:
+        os.remove(shelve_dir + 'pixels.dat')
+        os.remove(shelve_dir + 'pixels.dir')
+        os.remove(shelve_dir + 'pixels.bak')
+    except FileNotFoundError:
+        pass
+    pix = shelve.open(shelve_dir + 'pixels')
+    p = Pool(processes)
+    for ts, frame in p.imap(convert_to_dataframe, images.items()):
+        pix[ts] = frame.as_matrix()
+    p.close()
+    return pix
+
+
+def generate_coordinate_columns(x, y):
+    res = np.zeros((x * y, 2), dtype=int)
+    res[:, 0] = np.array([i for i in range(x) for j in range(y)])
+    res[:, 1] = np.array([i for i in range(y)] * x)
+    return res
+
+
+def extract_label_column(label_array):
+    df = pd.DataFrame(label_array)
+    df['x'] = df.index
+    label_set = pd.melt(df, id_vars='x')
+    return label_set.sort_values(by=['x', 'variable'])['value'].as_matrix()
+
+
+class PixelRowReader(object):
+
+    def __init__(self, pixels, limits):
+        self.pixels = pixels
+        self.limits = limits
+
+    def __call__(self, ts):
+        return self.pixels[ts][self.limits[0]: self.limits[1], :]
+
+
+def combine_set(pixels, shelve_dir=None, res=None, step=250000, processes=1, labels=None):
+    times = list(pixels.keys())
+    times.sort()
+    try:
+        os.remove(shelve_dir + 'set.dat')
+        os.remove(shelve_dir + 'set.dir')
+        os.remove(shelve_dir + 'set.bak')
+    except FileNotFoundError:
+        pass
+    pix_set = shelve.open(shelve_dir + 'set')
+    length = res[0] * res[1]
+    stops = list(range(0, length, step))
+    ranges = [(stops[i], stops[i+1]) for i in range(len(stops) - 1)] + [(stops[-1], length - 1)]
+    n = 0
+    if labels is not None:
+        label_column = extract_label_column(labels)
+    else:
+        label_column = None
+    for limits in ranges:
+        p = Pool(processes)
+        pieces = p.map(PixelRowReader(pixels, limits), times)
+        p.close()
+        if label_column is not None:
+            pieces += [label_column[limits[0]: limits[1]].reshape(limits[1] - limits[0], 1)]
+        res = np.concatenate(pieces, axis=1)
+        pix_set[str(n)] = res
+        n += 1
+    return pix_set
+
+
+def old_data_preprocess_workflow(image_dir, mask_dir, table_dir, new_table_dir, shelve_root_dir, labels,
+                                 max_days_apart=60, processes=1, step=250000):
+    print("reading data...")
+    ds = read_image_data(image_dir, mask_dir, table_dir, shelve_root_dir + 'old/', processes)
+    print("reading new timestamps...")
+    res = ds[list(ds.keys())[0]].shape[1:]
+    new_table = pd.read_csv(new_table_dir)
+    new_times = list(new_table['system:time_start'])
+    times_to_fit = []
+    for t in new_times:
+        dt = datetime.datetime.fromtimestamp(t / 1000)
+        dt = dt.replace(year=dt.year - 1)
+        times_to_fit += [int(dt.timestamp() * 1000)]
+    print("interpolating images...")
+    imgs = interpolate_images(times_to_fit, ds, max_days_apart, processes, shelve_root_dir)
+    ds.close()
+    print("storing sets...")
+    pix = store_set(imgs, processes, shelve_root_dir + 'old/')
+    imgs.close()
+    print("combining sets...")
+    train = combine_set(pix, shelve_root_dir + 'old/', res, step, processes, labels)
+    return train
+
+
+# old
 def generate_interpolated_training_set(ds, ds_new=None, label_img_dir='labels/labels.png',
                                        labels=None, max_days_apart=None):
     # assuming dict keys are strings
