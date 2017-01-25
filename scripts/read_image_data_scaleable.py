@@ -255,19 +255,37 @@ def combine_set(pixels, shelve_dir=None, res=None, step=250000, processes=1, lab
     return pix_set
 
 
-def old_data_preprocess_workflow(image_dir, mask_dir, table_dir, new_table_dir, shelve_root_dir, labels,
-                                 max_days_apart=60, processes=1, step=250000):
+def old_data_preprocess_workflow(image_dir, mask_dir, table_dir, shelve_root_dir, labels, new_table_dir=None,
+                                 max_days_apart=60, processes=1, step=250000, timestamps=None):
+    """
+    preprocess training data, interpolating it using the next year's available data timestamps
+    :param image_dir: directory of the image files
+    :param mask_dir: directory of the mask files
+    :param table_dir: path to the metadata table
+    :param new_table_dir: path to the next year's metadata table (not used if timestamps are given)
+    :param shelve_root_dir: root directory for shelf files to be created
+    :param labels: class label map in array form
+    :param max_days_apart: maximum days between interpolated value and an known value before reporting missing value
+    :param processes: number of processes for multiprocessing
+    :param step: batch size for training set generation
+    :param timestamps: timestamps for interpolation (not necessary if new_table_dir is given)
+    :return:
+    """
     print("reading data...")
     ds = read_image_data(image_dir, mask_dir, table_dir, shelve_root_dir + 'old/', processes)
     print("reading new timestamps...")
     res = ds[list(ds.keys())[0]].shape[1:]
     new_table = pd.read_csv(new_table_dir)
     new_times = list(new_table['system:time_start'])
-    times_to_fit = []
-    for t in new_times:
-        dt = datetime.datetime.fromtimestamp(t / 1000)
-        dt = dt.replace(year=dt.year - 1)
-        times_to_fit += [int(dt.timestamp() * 1000)]
+    if timestamps is None:
+        times_to_fit = []
+        for t in new_times:
+            dt = datetime.datetime.fromtimestamp(t / 1000)
+            dt = dt.replace(year=dt.year - 1)
+            times_to_fit += [int(dt.timestamp() * 1000)]
+    else:
+        times_to_fit = timestamps
+    times_to_fit.sort()
     print("interpolating images...")
     imgs = interpolate_images(times_to_fit, ds, max_days_apart, processes, shelve_root_dir)
     ds.close()
