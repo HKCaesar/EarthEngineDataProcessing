@@ -236,8 +236,11 @@ def combine_set(pixels, shelve_dir=None, res=None, step=250000, processes=1, lab
         pass
     pix_set = shelve.open(shelve_dir + 'set')
     length = res[0] * res[1]
-    stops = list(range(0, length, step))
-    ranges = [(stops[i], stops[i+1]) for i in range(len(stops) - 1)] + [(stops[-1], length - 1)]
+    if length < step:
+        ranges = [(0, length)]
+    else:
+        stops = list(range(0, length, step))
+        ranges = [(stops[i], stops[i+1]) for i in range(len(stops) - 1)] + [(stops[-1], length)]
     n = 0
     if labels is not None:
         label_column = extract_label_column(labels)
