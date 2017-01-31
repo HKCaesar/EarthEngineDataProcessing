@@ -114,7 +114,7 @@ def interpolate(timestamp, dataset, max_days_apart=None):
     pos = bisect.bisect(times, timestamp)
     # n_times = len(times)
     dims = dataset[str(times[0])].shape
-    interpolated = np.ones((3, dims[1], dims[2])) * (-999)
+    interpolated = np.ones((3, dims[1], dims[2]), dtype='int16') * (-999)
     times_before = times[:pos]
     times_before.reverse()
     times_after = times[pos:]
@@ -259,7 +259,7 @@ def combine_set(pixels, shelve_dir=None, res=None, step=250000, processes=1, lab
 
 
 def old_data_preprocess_workflow(image_dir, mask_dir, table_dir, shelve_root_dir, labels, new_table_dir=None,
-                                 max_days_apart=60, processes=1, step=250000, timestamps=None):
+                                 max_days_apart=60, processes=1, step=250000, timestamps=None, interpolate_processes=1):
     """
     preprocess training data, interpolating it using the next year's available data timestamps
     :param image_dir: directory of the image files
@@ -290,7 +290,7 @@ def old_data_preprocess_workflow(image_dir, mask_dir, table_dir, shelve_root_dir
         times_to_fit = timestamps
     times_to_fit.sort()
     print("interpolating images...")
-    imgs = interpolate_images(times_to_fit, ds, max_days_apart, processes, shelve_root_dir)
+    imgs = interpolate_images(times_to_fit, ds, max_days_apart, interpolate_processes, shelve_root_dir)
     ds.close()
     print("storing sets...")
     pix = store_set(imgs, processes, shelve_root_dir + 'old/')

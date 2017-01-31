@@ -105,6 +105,7 @@ docs/
 # dataset
 SDM320384/
 SDM324649_full/
+large_area/
 
 # temp model data
 models/
