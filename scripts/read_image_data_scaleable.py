@@ -96,7 +96,9 @@ def get_boolean_mask(image, level=1):
     """
     # cfmask = image[3, :, :]
     # cfmask_conf = image[4, :, :]
-    return (image[0, :, :] != 0) | (image[0, :, :] != -9999) | ((image[3, :, :] == 0) | (image[3, :, :] == 1)) & (image[4, :, :] <= level)
+    valid = (image[0, :, :] != 0) | (image[0, :, :] != -9999)
+    valid = valid | ((image[3, :, :] == 0) | (image[3, :, :] == 1))
+    return valid & (image[4, :, :] <= level)
 
 
 def zigzag_integer_pairs(max_x, max_y):
@@ -152,13 +154,15 @@ def interpolate(timestamp, maps, max_days_apart=None, shelve_dir=None):
             mask_before = get_boolean_mask(image_before)
             mask_after = get_boolean_mask(image_after)
             common_unmasked = mask_before & mask_after
+            del mask_before, mask_after
             valid = common_unmasked & unfilled
+            del common_unmasked
             #         fitted = dataset[before][:3, :, :] * alpha + dataset[after][:3, :, :] * (1 - alpha)
             fitted = np.zeros((3, dims[1], dims[2]))
             fitted[:, valid] = image_before[:3, valid] * alpha + image_after[:3, valid] * (1 - alpha)
             unfilled = unfilled ^ valid
             interpolated[:, valid] = fitted[:, valid]
-            del image_before, image_after, mask_before, mask_after, common_unmasked, valid, fitted
+            del image_before, image_after, valid, fitted
     times.sort(key=lambda t: abs(t - timestamp))
     for ts in times:
         delta = datetime.datetime.fromtimestamp(ts / 1000) - datetime.datetime.fromtimestamp(timestamp / 1000)
@@ -185,7 +189,7 @@ class Interpolater(object):
 
 def interpolate_images(timestamps, maps, max_days_apart=None, processes=1, shelve_dir=None):
     if processes == 1:
-        return {ts: interpolate(ts, dataset, max_days_apart) for ts in timestamps}
+        return {ts: interpolate(ts, maps, max_days_apart) for ts in timestamps}
     else:
         try:
             os.remove(shelve_dir + 'interpolated.*')
