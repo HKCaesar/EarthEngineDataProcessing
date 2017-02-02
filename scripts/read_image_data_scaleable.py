@@ -96,8 +96,8 @@ def get_boolean_mask(image, level=1):
     """
     # cfmask = image[3, :, :]
     # cfmask_conf = image[4, :, :]
-    valid = (image[0, :, :] != 0) | (image[0, :, :] != -9999)
-    valid = valid | ((image[3, :, :] == 0) | (image[3, :, :] == 1))
+    valid = (image[0, :, :] > 0)
+    valid = valid & ((image[3, :, :] == 0) | (image[3, :, :] == 1))
     return valid & (image[4, :, :] <= level)
 
 
