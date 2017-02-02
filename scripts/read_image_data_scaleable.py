@@ -11,16 +11,20 @@ from multiprocessing import Pool
 
 # define multiprocessing method for reading / combining raw images and masks
 class ImageReader:
-    def __init__(self, time_start, image_dir, mask_dir):
+    def __init__(self, time_start, image_dir, mask_dir, shelve_dir):
         self.time_start = time_start
         self.mask_dir = mask_dir
         self.image_dir = image_dir
+        self.shelve_dir = shelve_dir
 
     def __call__(self, fn):
         arr_img = rasterio.open(self.image_dir + fn).read()
         arr_msk = rasterio.open(self.mask_dir + fn).read()
         ts = self.time_start[self.time_start['system:index'] == fn.split('.')[0]]['system:time_start'].iloc[0]
-        return str(ts), np.concatenate((arr_img, arr_msk), axis=0)
+        combo = np.concatenate((arr_img, arr_msk), axis=0)
+        fp = np.memmap(self.shelve_dir + 'maps/' + str(ts), dtype='int16', mode='w+', shape=combo.shape)
+        fp[:] = combo[:]
+        return str(ts), fp
 
 
 def read_image_data(image_dir='2014/images/',
@@ -37,24 +41,23 @@ def read_image_data(image_dir='2014/images/',
     :param processes: number of processes to use
     :return: a Shelf View of the processed data, or a dict if shelve_dir is not specified
     """
+    # combined = {}
     if shelve_dir is None:
         combined = {}  # write to file instead
     else:
         try:
-            os.remove(shelve_dir + 'combined.dat')
-            os.remove(shelve_dir + 'combined.dir')
-            os.remove(shelve_dir + 'combined.bak')
+            os.remove(shelve_dir + 'combined.*')
         except FileNotFoundError:
             pass
         combined = shelve.open(shelve_dir + 'combined')
-        # ds = shelve.open(shelve_dir + 'ds')
 
     table = pd.read_csv(table_dir)
     time_start = table[['system:index', 'system:time_start']]
 
     p = Pool(processes)
-    for ts, img in p.imap(ImageReader(time_start, image_dir, mask_dir), os.listdir(image_dir)):
+    for ts, img in p.imap(ImageReader(time_start, image_dir, mask_dir, shelve_dir), os.listdir(image_dir)):
         combined[ts] = img
+        # pass
     p.close()
 
     # for fn in os.listdir(image_dir):
@@ -147,7 +150,7 @@ def interpolate(timestamp, dataset, max_days_apart=None):
 
 class Interpolater(object):
 
-    def __init__(self, dataset, max_days_apart=None):
+    def __init__(self, dataset, max_days_apart=None,):
         self.dataset = dataset
         self.max_days_apart = max_days_apart
 
@@ -160,9 +163,7 @@ def interpolate_images(timestamps, dataset, max_days_apart=None, processes=1, sh
         return {ts: interpolate(ts, dataset, max_days_apart) for ts in timestamps}
     else:
         try:
-            os.remove(shelve_dir + 'interpolated.dat')
-            os.remove(shelve_dir + 'interpolated.dir')
-            os.remove(shelve_dir + 'interpolated.bak')
+            os.remove(shelve_dir + 'interpolated.*')
         except FileNotFoundError:
             pass
         imgs = shelve.open(shelve_dir + 'interpolated')
@@ -188,9 +189,7 @@ def make_set(images):
 
 def store_set(images, processes=1, shelve_dir=None):
     try:
-        os.remove(shelve_dir + 'pixels.dat')
-        os.remove(shelve_dir + 'pixels.dir')
-        os.remove(shelve_dir + 'pixels.bak')
+        os.remove(shelve_dir + 'pixels.*')
     except FileNotFoundError:
         pass
     pix = shelve.open(shelve_dir + 'pixels')
@@ -229,9 +228,7 @@ def combine_set(pixels, shelve_dir=None, res=None, step=250000, processes=1, lab
     times = list(pixels.keys())
     times.sort()
     try:
-        os.remove(shelve_dir + 'set.dat')
-        os.remove(shelve_dir + 'set.dir')
-        os.remove(shelve_dir + 'set.bak')
+        os.remove(shelve_dir + 'set.*')
     except FileNotFoundError:
         pass
     pix_set = shelve.open(shelve_dir + 'set')
@@ -259,7 +256,7 @@ def combine_set(pixels, shelve_dir=None, res=None, step=250000, processes=1, lab
 
 
 def old_data_preprocess_workflow(image_dir, mask_dir, table_dir, shelve_root_dir, labels, new_table_dir=None,
-                                 max_days_apart=60, processes=1, step=250000, timestamps=None, interpolate_processes=1):
+                                 max_days_apart=60, processes=1, step=250000, timestamps=None):
     """
     preprocess training data, interpolating it using the next year's available data timestamps
     :param image_dir: directory of the image files
@@ -290,7 +287,7 @@ def old_data_preprocess_workflow(image_dir, mask_dir, table_dir, shelve_root_dir
         times_to_fit = timestamps
     times_to_fit.sort()
     print("interpolating images...")
-    imgs = interpolate_images(times_to_fit, ds, max_days_apart, interpolate_processes, shelve_root_dir)
+    imgs = interpolate_images(times_to_fit, ds, max_days_apart, processes, shelve_root_dir)
     ds.close()
     print("storing sets...")
     pix = store_set(imgs, processes, shelve_root_dir + 'old/')
