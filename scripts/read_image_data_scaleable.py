@@ -9,6 +9,23 @@ from PIL import Image
 from multiprocessing import Pool
 
 
+def create_folders(shelve_dir):
+    if not os.path.exists(shelve_dir):
+        os.mkdir(shelve_dir)
+    if not os.path.exists(shelve_dir + 'old/'):
+        os.mkdir(shelve_dir + 'old/')
+    if not os.path.exists(shelve_dir + 'old/maps'):
+        os.mkdir(shelve_dir + 'old/maps')
+    if not os.path.exists(shelve_dir + 'old/maps_interpolated'):
+        os.mkdir(shelve_dir + 'old/maps_interpolated')
+    if not os.path.exists(shelve_dir + 'new/'):
+        os.mkdir(shelve_dir + 'new/')
+    if not os.path.exists(shelve_dir + 'new/maps'):
+        os.mkdir(shelve_dir + 'new/maps')
+    if not os.path.exists(shelve_dir + 'new/maps_interpolated'):
+        os.mkdir(shelve_dir + 'new/maps_interpolated')
+
+
 # define multiprocessing method for reading / combining raw images and masks
 class ImageReader:
     def __init__(self, time_start, image_dir, mask_dir, shelve_dir):
@@ -22,9 +39,7 @@ class ImageReader:
         arr_msk = rasterio.open(self.mask_dir + fn).read()
         ts = self.time_start[self.time_start['system:index'] == fn.split('.')[0]]['system:time_start'].iloc[0]
         combo = np.concatenate((arr_img, arr_msk), axis=0)
-        fp = np.memmap(self.shelve_dir + 'maps/' + str(ts), dtype='int16', mode='w+', shape=combo.shape)
-        fp[:] = combo[:]
-        return str(ts), fp
+        return str(ts), combo
 
 
 def read_image_data(image_dir='2014/images/',
@@ -55,9 +70,12 @@ def read_image_data(image_dir='2014/images/',
     time_start = table[['system:index', 'system:time_start']]
 
     p = Pool(processes)
-    for ts, img in p.imap(ImageReader(time_start, image_dir, mask_dir, shelve_dir), os.listdir(image_dir)):
-        combined[ts] = img
-        # pass
+    for ts, combo in p.imap(ImageReader(time_start, image_dir, mask_dir, shelve_dir), os.listdir(image_dir)):
+        # combined[ts] = img
+        fp = np.memmap(shelve_dir + 'maps/' + str(ts), dtype='int16', mode='w+', shape=combo.shape)
+        fp[:] = combo[:]
+        combined[ts] = combo.shape
+        del fp, combo
     p.close()
 
     # for fn in os.listdir(image_dir):
@@ -76,9 +94,9 @@ def get_boolean_mask(image, level=1):
     :param level: minimal confidence level
     :return: a mask matrix
     """
-    cfmask = image[3, :, :]
-    cfmask_conf = image[4, :, :]
-    return ((cfmask == 0) | (cfmask == 1)) & (cfmask_conf <= level)
+    # cfmask = image[3, :, :]
+    # cfmask_conf = image[4, :, :]
+    return (image[0, :, :] != 0) | (image[0, :, :] != -9999) | ((image[3, :, :] == 0) | (image[3, :, :] == 1)) & (image[4, :, :] <= level)
 
 
 def zigzag_integer_pairs(max_x, max_y):
@@ -101,7 +119,7 @@ def zigzag_integer_pairs(max_x, max_y):
             x = 0
             
 
-def interpolate(timestamp, dataset, max_days_apart=None):
+def interpolate(timestamp, maps, max_days_apart=None, shelve_dir=None):
     # assuming dict keys are strings
     """
     Calculate the interpolated image at a given timestamp
@@ -111,13 +129,14 @@ def interpolate(timestamp, dataset, max_days_apart=None):
     in interpolation before the algorithm reports a missing value
     :return: the interpolated image array
     """
-    keys = list(dataset.keys())
+    keys = list(maps.keys())
     times = [int(k) for k in keys]
     times.sort()
     pos = bisect.bisect(times, timestamp)
     # n_times = len(times)
-    dims = dataset[str(times[0])].shape
-    interpolated = np.ones((3, dims[1], dims[2]), dtype='int16') * (-999)
+    # dims = dataset[str(times[0])].shape
+    dims = maps[next(iter(maps.keys()))]
+    interpolated = np.ones((3, dims[1], dims[2]), dtype='int16') * (-9999)
     times_before = times[:pos]
     times_before.reverse()
     times_after = times[pos:]
@@ -128,37 +147,43 @@ def interpolate(timestamp, dataset, max_days_apart=None):
         delta = datetime.datetime.fromtimestamp(after/1000) - datetime.datetime.fromtimestamp(before/1000)
         if max_days_apart is None or delta.days < max_days_apart:
             alpha = 1.0 * (timestamp - before) / (after - before)
-            mask_before = get_boolean_mask(dataset[str(before)])
-            mask_after = get_boolean_mask(dataset[str(after)])
+            image_before = np.memmap(shelve_dir + 'maps/' + str(before), dtype='int16', mode='r', shape=maps[str(before)])
+            image_after = np.memmap(shelve_dir + 'maps/' + str(after), dtype='int16', mode='r', shape=maps[str(after)])
+            mask_before = get_boolean_mask(image_before)
+            mask_after = get_boolean_mask(image_after)
             common_unmasked = mask_before & mask_after
             valid = common_unmasked & unfilled
             #         fitted = dataset[before][:3, :, :] * alpha + dataset[after][:3, :, :] * (1 - alpha)
             fitted = np.zeros((3, dims[1], dims[2]))
-            fitted[:, valid] = dataset[str(before)][:3, valid] * alpha + dataset[str(after)][:3, valid] * (1 - alpha)
+            fitted[:, valid] = image_before[:3, valid] * alpha + image_after[:3, valid] * (1 - alpha)
             unfilled = unfilled ^ valid
             interpolated[:, valid] = fitted[:, valid]
+            del image_before, image_after, mask_before, mask_after, common_unmasked, valid, fitted
     times.sort(key=lambda t: abs(t - timestamp))
     for ts in times:
         delta = datetime.datetime.fromtimestamp(ts / 1000) - datetime.datetime.fromtimestamp(timestamp / 1000)
         if max_days_apart is None or abs(delta.days) < max_days_apart:
-            mask = get_boolean_mask(dataset[str(ts)])
+            img_nearest = np.memmap(shelve_dir + 'maps/' + str(ts), dtype='int16', mode='r', shape=maps[str(ts)])
+            mask = get_boolean_mask(img_nearest)
             valid = mask & unfilled
             unfilled = unfilled ^ valid
-            interpolated[:, valid] = dataset[str(ts)][:3, valid]
+            interpolated[:, valid] = img_nearest[:3, valid]
+            del img_nearest, mask, valid
     return interpolated
 
 
 class Interpolater(object):
 
-    def __init__(self, dataset, max_days_apart=None,):
-        self.dataset = dataset
+    def __init__(self, maps, max_days_apart=None, shelve_dir=None):
+        self.maps = maps
         self.max_days_apart = max_days_apart
+        self.shelve_dir = shelve_dir
 
     def __call__(self, ts):
-        return str(ts), interpolate(ts, self.dataset, self.max_days_apart)
+        return str(ts), interpolate(ts, self.maps, self.max_days_apart, self.shelve_dir)
 
 
-def interpolate_images(timestamps, dataset, max_days_apart=None, processes=1, shelve_dir=None):
+def interpolate_images(timestamps, maps, max_days_apart=None, processes=1, shelve_dir=None):
     if processes == 1:
         return {ts: interpolate(ts, dataset, max_days_apart) for ts in timestamps}
     else:
@@ -168,8 +193,11 @@ def interpolate_images(timestamps, dataset, max_days_apart=None, processes=1, sh
             pass
         imgs = shelve.open(shelve_dir + 'interpolated')
         p = Pool(processes)
-        for ts, img in p.imap(Interpolater(dataset, max_days_apart), timestamps):
-            imgs[ts] = img
+        for ts, img in p.imap(Interpolater(maps, max_days_apart, shelve_dir), timestamps):
+            fp = np.memmap(shelve_dir + 'maps_interpolated/' + str(ts), dtype='int16', mode='w+', shape=img.shape)
+            fp[:] = img[:]
+            imgs[ts] = img.shape
+            del fp, img
         p.close()
         return imgs
 
