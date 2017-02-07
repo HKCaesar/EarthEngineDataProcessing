@@ -229,7 +229,8 @@ def extract_partial_set(index_range, imgs, img_dir, labels=None):
     start, end = index_range
     items = list(imgs.items())
     items.sort()
-    df = pd.DataFrame()
+    b, x, y = items[0][1]
+    df = pd.DataFrame(generate_coordinate_columns(x, y)[start:end, :], columns=['x', 'y'])
     for i in range(len(items)):
         ts, res = items[i]
         img = open_img(ts, img_dir, (res[0], res[1] * res[2]))
@@ -265,8 +266,23 @@ def store_set(step, imgs, img_dir, shelve_dir, name='trains', labels=None):
     return trains
 
 
+def write_to_csv(step, imgs, img_dir, shelve_dir, name='trains', labels=None):
+    try:
+        os.remove(shelve_dir + name + '.csv')
+    except FileNotFoundError:
+        pass
+    with open(shelve_dir + name + '.csv', 'a') as f:
+        first = True
+        for index_range, train in partial_set_iterator(step, imgs, img_dir, labels):
+            if first:
+                train.to_csv(f, header=True, index=False)
+                first = False
+            else:
+                train.to_csv(f, header=False, index=False)
+
+
 def old_data_preprocess_workflow(image_dir, mask_dir, table_dir, shelve_root_dir, labels, new_table_dir=None,
-                                 max_days_apart=60, processes=1, step=250000, timestamps=None):
+                                 max_days_apart=60, processes=1, step=250000, timestamps=None, to_csv=False):
     """
     preprocess training data, interpolating it using the next year's available data timestamps
     :param image_dir: directory of the image files
@@ -299,12 +315,16 @@ def old_data_preprocess_workflow(image_dir, mask_dir, table_dir, shelve_root_dir
     print("interpolating images...")
     imgs = interpolate_images(times_to_fit, maps, max_days_apart, processes, shelve_root_dir + 'old/')
     print("generating sets...")
-    trains = store_set(step, imgs, shelve_root_dir + 'old/maps_interpolated/', shelve_root_dir, 'trains', labels)
-    return trains
+    if not to_csv:
+        trains = store_set(step, imgs, shelve_root_dir + 'old/maps_interpolated/', shelve_root_dir, 'trains', labels)
+        return trains
+    else:
+        write_to_csv(step, imgs, shelve_root_dir + 'old/maps_interpolated/', shelve_root_dir, 'trains', labels)
+        return True
 
 
 def new_data_preprocess_workflow(image_dir, mask_dir, table_dir, shelve_root_dir,
-                                 max_days_apart=60, processes=1, step=250000):
+                                 max_days_apart=60, processes=1, step=250000, to_csv=False):
     """
     preprocess training data, interpolating it using the next year's available data timestamps
     :param image_dir: directory of the image files
@@ -326,8 +346,12 @@ def new_data_preprocess_workflow(image_dir, mask_dir, table_dir, shelve_root_dir
     print("interpolating images...")
     imgs = interpolate_images(times_to_fit, maps, max_days_apart, processes, shelve_root_dir + 'new/')
     print("generating sets...")
-    trains = store_set(step, imgs, shelve_root_dir + 'new/maps_interpolated/', shelve_root_dir, 'to_predict')
-    return trains
+    if not to_csv:
+        to_predict = store_set(step, imgs, shelve_root_dir + 'new/maps_interpolated/', shelve_root_dir, 'to_predict')
+        return to_predict
+    else:
+        write_to_csv(step, imgs, shelve_root_dir + 'new/maps_interpolated/', shelve_root_dir, 'to_predict')
+        return True
 
 
 # def convert_to_dataframe(key_image):
