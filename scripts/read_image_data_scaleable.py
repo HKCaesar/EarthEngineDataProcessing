@@ -132,10 +132,38 @@ def slice_indices(x, y, sx, sy):
             yield (x_range, y_range)
 
 
-def interpolate(timestamp, maps, max_days_apart=None, shelve_dir=None):
+def slice_interpolation(image_before, image_after, xy, unfilled, alpha):
+    x_range, y_range = xy
+    slice_before = image_before[:, x_range[0]:x_range[1], y_range[0]:y_range[1]]
+    slice_after = image_after[:, x_range[0]:x_range[1], y_range[0]:y_range[1]]
+    mask_before = get_boolean_mask(slice_before)
+    mask_after = get_boolean_mask(slice_after)
+    common_unmasked = mask_before & mask_after
+    del mask_before, mask_after
+    valid = common_unmasked & unfilled[x_range[0]:x_range[1], y_range[0]:y_range[1]]
+    del common_unmasked
+    fitted = np.zeros((3, x_range[1] - x_range[0], y_range[1] - y_range[0]))
+    fitted[:, valid] = slice_before[:3, valid] * alpha + slice_after[:3, valid] * (1 - alpha)
+    return x_range, y_range, valid, fitted
+
+
+class SliceInterpolator(object):
+    def __init__(self, image_before, image_after, unfilled, alpha):
+        self.image_before = image_before
+        self.image_after = image_after
+        self.unfilled = unfilled
+        self.alpha = alpha
+
+    def __call__(self, xy):
+        return slice_interpolation(self.image_before, self.image_after, xy, self.unfilled, self.alpha)
+
+
+def interpolate(timestamp, maps, max_days_apart=None, shelve_dir=None, processes=1, block_size=3000):
     # assuming dict keys are strings
     """
     Calculate the interpolated image at a given timestamp
+    :param block_size: size of slices (for both x and y) into which the image is divided before interpolation
+    :param processes: number of parallel processes
     :param shelve_dir: directory for shelf and memmap files
     :param timestamp: timestamp for interpolation (as int)
     :param maps: a dict or shelf view for image data, assuming timestamps are strings
@@ -161,20 +189,29 @@ def interpolate(timestamp, maps, max_days_apart=None, shelve_dir=None):
         delta = datetime.datetime.fromtimestamp(after/1000) - datetime.datetime.fromtimestamp(before/1000)
         if max_days_apart is None or delta.days < max_days_apart:
             alpha = 1.0 * (timestamp - before) / (after - before)
-            image_before = np.memmap(shelve_dir + 'maps/' + str(before), dtype='int16', mode='r', shape=maps[str(before)])
+            image_before = np.memmap(shelve_dir + 'maps/' + str(before), dtype='int16', mode='r',
+                                     shape=maps[str(before)])
             image_after = np.memmap(shelve_dir + 'maps/' + str(after), dtype='int16', mode='r', shape=maps[str(after)])
-            mask_before = get_boolean_mask(image_before)
-            mask_after = get_boolean_mask(image_after)
-            common_unmasked = mask_before & mask_after
-            del mask_before, mask_after
-            valid = common_unmasked & unfilled
-            del common_unmasked
-            #         fitted = dataset[before][:3, :, :] * alpha + dataset[after][:3, :, :] * (1 - alpha)
-            fitted = np.zeros((3, dims[1], dims[2]))
-            fitted[:, valid] = image_before[:3, valid] * alpha + image_after[:3, valid] * (1 - alpha)
-            unfilled = unfilled ^ valid
-            interpolated[:, valid] = fitted[:, valid]
-            del image_before, image_after, valid, fitted
+            # mask_before = get_boolean_mask(image_before)
+            # mask_after = get_boolean_mask(image_after)
+            # common_unmasked = mask_before & mask_after
+            # del mask_before, mask_after
+            # valid = common_unmasked & unfilled
+            # del common_unmasked
+            # #         fitted = dataset[before][:3, :, :] * alpha + dataset[after][:3, :, :] * (1 - alpha)
+            # fitted = np.zeros((3, dims[1], dims[2]))
+            # fitted[:, valid] = image_before[:3, valid] * alpha + image_after[:3, valid] * (1 - alpha)
+            res_x, res_y = maps[str(before)][1:]
+            # ranges = slice_indices(res_x, res_y, res_x, res_y)
+            # p = Pool(processes)
+            # for xr, yr in slice_indices(res_x, res_y, res_x, res_y):
+            for xr, yr, valid, fitted in map(SliceInterpolator(image_before, image_after, unfilled, alpha),
+                                             slice_indices(res_x, res_y, block_size, block_size)):
+                # valid, fitted = slice_interpolation(image_before, image_after, (xr, yr), unfilled, alpha)
+                unfilled[xr[0]:xr[1], yr[0]:yr[1]] = unfilled[xr[0]:xr[1], yr[0]:yr[1]] ^ valid
+                interpolated[:, xr[0]:xr[1], yr[0]:yr[1]][:, valid] = fitted[:, valid]
+            # p.close()
+            del image_before, image_after
     times.sort(key=lambda t: abs(t - timestamp))
     for ts in times:
         delta = datetime.datetime.fromtimestamp(ts / 1000) - datetime.datetime.fromtimestamp(timestamp / 1000)
@@ -190,16 +227,19 @@ def interpolate(timestamp, maps, max_days_apart=None, shelve_dir=None):
 
 class Interpolater(object):
 
-    def __init__(self, maps, max_days_apart=None, shelve_dir=None):
+    def __init__(self, maps, max_days_apart=None, shelve_dir=None, processes=1, block_size=3000):
         self.maps = maps
         self.max_days_apart = max_days_apart
         self.shelve_dir = shelve_dir
+        self.processes = processes
+        self.block_size = block_size
 
     def __call__(self, ts):
-        return str(ts), interpolate(ts, self.maps, self.max_days_apart, self.shelve_dir)
+        return str(ts), interpolate(ts, self.maps, self.max_days_apart, self.shelve_dir, self.processes,
+                                    self.block_size)
 
 
-def interpolate_images(timestamps, maps, max_days_apart=None, processes=1, shelve_dir=None):
+def interpolate_images(timestamps, maps, max_days_apart=None, processes=1, shelve_dir=None, block_size=3000):
     if processes == 1:
         return {ts: interpolate(ts, maps, max_days_apart) for ts in timestamps}
     else:
@@ -209,7 +249,7 @@ def interpolate_images(timestamps, maps, max_days_apart=None, processes=1, shelv
             pass
         imgs = shelve.open(shelve_dir + 'interpolated')
         p = Pool(processes)
-        for ts, img in p.imap(Interpolater(maps, max_days_apart, shelve_dir), timestamps):
+        for ts, img in p.imap(Interpolater(maps, max_days_apart, shelve_dir, processes, block_size), timestamps):
             fp = np.memmap(shelve_dir + 'maps_interpolated/' + str(ts), dtype='int16', mode='w+', shape=img.shape)
             fp[:] = img[:]
             imgs[ts] = img.shape
@@ -293,9 +333,12 @@ def write_to_csv(step, imgs, img_dir, shelve_dir, name='trains', labels=None):
 
 
 def old_data_preprocess_workflow(image_dir, mask_dir, table_dir, shelve_root_dir, labels, new_table_dir=None,
-                                 max_days_apart=60, processes=1, step=250000, timestamps=None, to_csv=False):
+                                 max_days_apart=60, processes=1, step=250000, timestamps=None, to_csv=False,
+                                 block_size=3000):
     """
     preprocess training data, interpolating it using the next year's available data timestamps
+    :param block_size:
+    :param to_csv: whether to write to a csv file. if False, output shelf file reference
     :param image_dir: directory of the image files
     :param mask_dir: directory of the mask files
     :param table_dir: path to the metadata table
@@ -324,7 +367,7 @@ def old_data_preprocess_workflow(image_dir, mask_dir, table_dir, shelve_root_dir
         times_to_fit = timestamps
     times_to_fit.sort()
     print("interpolating images...")
-    imgs = interpolate_images(times_to_fit, maps, max_days_apart, processes, shelve_root_dir + 'old/')
+    imgs = interpolate_images(times_to_fit, maps, max_days_apart, processes, shelve_root_dir + 'old/', block_size)
     print("generating sets...")
     if not to_csv:
         trains = store_set(step, imgs, shelve_root_dir + 'old/maps_interpolated/', shelve_root_dir, 'trains', labels)
@@ -335,9 +378,10 @@ def old_data_preprocess_workflow(image_dir, mask_dir, table_dir, shelve_root_dir
 
 
 def new_data_preprocess_workflow(image_dir, mask_dir, table_dir, shelve_root_dir,
-                                 max_days_apart=60, processes=1, step=250000, to_csv=False):
+                                 max_days_apart=60, processes=1, step=250000, to_csv=False, block_size=3000):
     """
     preprocess training data, interpolating it using the next year's available data timestamps
+    :param to_csv: whether to write to a csv file. if False, output shelf file reference
     :param image_dir: directory of the image files
     :param mask_dir: directory of the mask files
     :param table_dir: path to the metadata table
@@ -355,7 +399,7 @@ def new_data_preprocess_workflow(image_dir, mask_dir, table_dir, shelve_root_dir
     times_to_fit = list(new_table['system:time_start'])
     times_to_fit.sort()
     print("interpolating images...")
-    imgs = interpolate_images(times_to_fit, maps, max_days_apart, processes, shelve_root_dir + 'new/')
+    imgs = interpolate_images(times_to_fit, maps, max_days_apart, processes, shelve_root_dir + 'new/', block_size)
     print("generating sets...")
     if not to_csv:
         to_predict = store_set(step, imgs, shelve_root_dir + 'new/maps_interpolated/', shelve_root_dir, 'to_predict')
