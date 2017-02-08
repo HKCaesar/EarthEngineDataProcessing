@@ -120,12 +120,23 @@ def zigzag_integer_pairs(max_x, max_y):
         else:
             total += 1
             x = 0
-            
+
+
+def slice_indices(x, y, sx, sy):
+    x_stops = range(0, x, sx)
+    y_stops = range(0, y, sy)
+    x_list = [(x_stops[i], x_stops[i+1]) for i in range(len(x_stops) - 1)] + [(x_stops[-1], x)]
+    y_list = [(y_stops[i], y_stops[i+1]) for i in range(len(y_stops) - 1)] + [(y_stops[-1], y)]
+    for x_range in x_list:
+        for y_range in y_list:
+            yield (x_range, y_range)
+
 
 def interpolate(timestamp, maps, max_days_apart=None, shelve_dir=None):
     # assuming dict keys are strings
     """
     Calculate the interpolated image at a given timestamp
+    :param shelve_dir: directory for shelf and memmap files
     :param timestamp: timestamp for interpolation (as int)
     :param maps: a dict or shelf view for image data, assuming timestamps are strings
     :param max_days_apart: maximum days allowed between two interpolated value and a known value to be used as input
