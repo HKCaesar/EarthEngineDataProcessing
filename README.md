@@ -6,4 +6,4 @@ read_land_use_no_gdal.py is the module for label map generation. The function re
 
 read_image_data_scaleable.py is the script for raster data preprocessing and training set generation. The function old_data_preprocess_workflow() executes all the steps needed to generate a training data set.
 
-The notebook test_workflow.ipynb tests training set generation with multiprocessing.
+Use the Instructions.ipynb notebook for further instructions and testing. If running on a clean installation, install Anaconda (Python 3) and the packages rasterio, fiona, shapely (preferably with *conda install*) and run *jupyter notebook* in the root directory to view and run the notebook.
