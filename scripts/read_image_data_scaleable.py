@@ -158,6 +158,23 @@ class SliceInterpolator(object):
         return slice_interpolation(self.image_before, self.image_after, xy, self.unfilled, self.alpha)
 
 
+def slice_filling(image_nearest, xy, unfilled):
+    x_range, y_range = xy
+    image_slice = image_nearest[:, x_range[0]:x_range[1], y_range[0]:y_range[1]]
+    mask = get_boolean_mask(image_slice)
+    valid = mask & unfilled[x_range[0]:x_range[1], y_range[0]:y_range[1]]
+    return x_range, y_range, valid
+
+
+class SliceFiller(object):
+    def __init__(self, image_nearest, unfilled):
+        self.image_nearest = image_nearest
+        self.unfilled = unfilled
+
+    def __call__(self, xy):
+        return slice_filling(self.image_nearest, xy, self.unfilled)
+
+
 def interpolate(timestamp, maps, max_days_apart=None, shelve_dir=None, processes=1, block_size=3000):
     # assuming dict keys are strings
     """
@@ -216,12 +233,24 @@ def interpolate(timestamp, maps, max_days_apart=None, shelve_dir=None, processes
     for ts in times:
         delta = datetime.datetime.fromtimestamp(ts / 1000) - datetime.datetime.fromtimestamp(timestamp / 1000)
         if max_days_apart is None or abs(delta.days) < max_days_apart:
-            img_nearest = np.memmap(shelve_dir + 'maps/' + str(ts), dtype='int16', mode='r', shape=maps[str(ts)])
-            mask = get_boolean_mask(img_nearest)
-            valid = mask & unfilled
-            unfilled = unfilled ^ valid
-            interpolated[:, valid] = img_nearest[:3, valid]
-            del img_nearest, mask, valid
+            image_nearest = np.memmap(shelve_dir + 'maps/' + str(ts), dtype='int16', mode='r', shape=maps[str(ts)])
+            # mask = get_boolean_mask(image_nearest)
+            # valid = mask & unfilled
+            # unfilled = unfilled ^ valid
+            # interpolated[:, valid] = image_nearest[:3, valid]
+            # del image_nearest, mask, valid
+            res_x, res_y = maps[str(ts)][1:]
+            for xr, yr, valid in map(SliceFiller(image_nearest, unfilled),
+                                     slice_indices(res_x, res_y, block_size, block_size)):
+                # print("debug:")
+                # print(unfilled[xr[0]:xr[1], yr[0]:yr[1]].shape)
+                # print(interpolated[:, xr[0]:xr[1], yr[0]:yr[1]].shape)
+                # print(image_nearest.shape)
+                # print(valid.shape)
+                unfilled[xr[0]:xr[1], yr[0]:yr[1]] = unfilled[xr[0]:xr[1], yr[0]:yr[1]] ^ valid
+                interpolated[:, xr[0]:xr[1], yr[0]:yr[1]][:, valid] =\
+                    image_nearest[:3, xr[0]:xr[1], yr[0]:yr[1]][:, valid]
+            del image_nearest
     return interpolated
 
 
